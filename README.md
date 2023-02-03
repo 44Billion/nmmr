@@ -19,18 +19,18 @@ $> yarn add merkle-mountain-ranges
 ### RAM (in-memory) example
 
 ```typescript
-import { MMR } from 'merkle-mountain-ranges';
+import { InMemoryMMR } from "merkle-mountain-ranges";
 
-function main() {
-    const mmr = new MMR();
+async function main() {
+  const mmr = new InMemoryMMR();
 
-    mmr.append('1');
-    const proof = mmr.getProof(1);
-    mmr.verifyProof(proof);
-    // ...
+  mmr.append("1");
+  const proof = await mmr.getProof(1);
+  mmr.verifyProof(proof);
+  // ...
 }
 
-main();
+main().catch(console.error);
 ```
 
 ### Redis usage example
@@ -144,7 +144,7 @@ $> npx ts-mocha test/rocksdb/*.ts
 $> yarn test
 ```
 
-2022 - Herodotus Dev Ltd
+2023 - Herodotus Dev Ltd
 
 ## License
 
