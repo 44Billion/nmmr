@@ -65,10 +65,20 @@ export class MMR implements IMMR {
         return value;
     }
 
-    async dbHGet(key: string, field: string) {
+    async dbHGet(key: string, field: string): Promise<string | undefined> {
         if (!this.db.isOperational())
             throw new Error('Database not operational');
-        return this.db.get(`${this.uuid}.${key}.${field}`);
+        try {
+            const value = await this.db.get(`${this.uuid}.${key}.${field}`);
+            return value;
+        } catch (err: any) {
+            if (
+                err.message &&
+                err.message.startsWith('Key not found in database')
+            )
+                return undefined;
+            throw new Error(err);
+        }
     }
 
     async dbIncr(key: string) {
@@ -159,6 +169,106 @@ export class MMR implements IMMR {
         } as AppendTransaction;
     }
 
+    async precomputeInit(computationUuid: string): Promise<void> {
+        if (!this.db.isOperational())
+            throw new Error('Database not operational');
+        await this.dbSet(
+            `${computationUuid}-lastPos`,
+            await this.dbGet('lastPos')
+        );
+        await this.dbSet(
+            `${computationUuid}-leaves`,
+            await this.dbGet('leaves')
+        );
+        await this.dbSet(
+            `${computationUuid}-rootHash`,
+            await this.dbGet('rootHash')
+        );
+        await this.dbSet(`${computationUuid}-init`, true);
+    }
+
+    async precomputeReset(computationUuid: string): Promise<void> {
+        if (!this.db.isOperational())
+            throw new Error('Database not operational');
+        await this.dbZeroSet(`${computationUuid}-lastPos`);
+        await this.dbZeroSet(`${computationUuid}-hashes`);
+        await this.dbZeroSet(`${computationUuid}-leaves`);
+        await this.dbSet(`${computationUuid}-rootHash`, '');
+    }
+
+    async precomputeAppend(
+        computationUuid: string,
+        value: string
+    ): Promise<AppendResult> {
+        if (!this.db.isOperational())
+            throw new Error('Database not operational');
+        const isPrecomputeInitialized =
+            (await this.dbGet(`${computationUuid}-init`)) === 'true';
+        if (!isPrecomputeInitialized)
+            throw new Error(
+                `${computationUuid} is not initialized. Call precomputeInit beforehand`
+            );
+
+        // Increment position
+        let lastPos = await this.dbIncr(`${computationUuid}-lastPos`);
+        const leafIdx = lastPos.toString();
+        const hash = pedersen(leafIdx, value);
+        await this.dbHSet(`${computationUuid}-hashes`, leafIdx, hash);
+        await this.dbHSet(`${computationUuid}-values`, leafIdx, value);
+
+        let height = 0;
+
+        // If the height of the next node is higher then the height of current node
+        // It means that the next node is a parent of current, thus merging happens
+        while (getHeight(lastPos + 1) > height) {
+            ++lastPos;
+
+            const left = lastPos - parentOffset(height);
+            const right = left + siblingOffset(height);
+
+            let [leftHash, rightHash] = await this.db.getMany([
+                `${this.uuid}.${computationUuid}-hashes.${left.toString()}`,
+                `${this.uuid}.${computationUuid}-hashes.${right.toString()}`,
+            ]);
+            // If not among `computationUuid`-hashes, lookup in `hashes`.
+            if (!leftHash)
+                leftHash = await this.dbHGet('hashes', left.toString());
+            // If not among `computationUuid`-hashes, lookup in `hashes`.
+            if (!rightHash)
+                rightHash = await this.dbHGet('hashes', right.toString());
+            const parentHash = pedersen(
+                lastPos.toString(),
+                pedersen(leftHash, rightHash)
+            );
+            await this.dbHSet(
+                `${computationUuid}-hashes`,
+                lastPos.toString(),
+                parentHash
+            );
+
+            height++;
+        }
+
+        // Update latest value.
+        await this.dbSet(`${computationUuid}-lastPos`, lastPos);
+
+        // Compute the new root hash
+        let rootHash;
+        if (this.withRootHash) {
+            rootHash = await this.precomputeBagThePeaks(computationUuid);
+            await this.dbSet(`${computationUuid}-rootHash`, rootHash);
+        }
+
+        const leaves = await this.dbIncr(`${computationUuid}-leaves`);
+        // Returns the new total number of leaves.
+        return {
+            leavesCount: leaves,
+            leafIdx,
+            rootHash,
+            lastPos, // Tree size
+        };
+    }
+
     async append(value: string): Promise<AppendResult> {
         if (!this.db.isOperational())
             throw new Error('Database not operational');
@@ -215,6 +325,46 @@ export class MMR implements IMMR {
         };
     }
 
+    async precomputeBagThePeaks(
+        computationUuid: string,
+        peaks?: number[],
+        givenLastPos?: number
+    ): Promise<string> {
+        if (!this.db.isOperational())
+            throw new Error('Database not operational');
+        const lastPos =
+            givenLastPos ??
+            Number(await this.dbGet(`${computationUuid}-lastPos`));
+        if (!peaks) {
+            peaks = findPeaks(lastPos);
+        }
+
+        let bags = await this.dbHGet(
+            'hashes',
+            peaks[peaks.length - 1].toString()
+        );
+        // Look up in tmp hashes if not present in the read-only tree.
+        if (!bags)
+            bags = await this.dbHGet(
+                `${computationUuid}-hashes`,
+                peaks[peaks.length - 1].toString()
+            );
+
+        for (let idx = peaks.length - 1; idx >= 0; --idx) {
+            let peak = await this.dbHGet('hashes', peaks[idx].toString());
+            // Look up in tmp hashes if not present in the read-only tree.
+            if (!peak)
+                peak = await this.dbHGet(
+                    `${computationUuid}-hashes`,
+                    peaks[idx].toString()
+                );
+            bags = pedersen(bags!, peak!);
+        }
+        const treeSize = lastPos;
+        const rootHash = pedersen(treeSize.toString(), bags!);
+        return rootHash;
+    }
+
     async bagThePeaks(
         peaks?: number[],
         givenLastPos?: number
@@ -233,10 +383,10 @@ export class MMR implements IMMR {
 
         for (let idx = peaks.length - 1; idx >= 0; --idx) {
             const peak = await this.dbHGet('hashes', peaks[idx].toString());
-            bags = pedersen(bags, peak);
+            bags = pedersen(bags!, peak!);
         }
         const treeSize = lastPos;
-        const rootHash = pedersen(treeSize.toString(), bags);
+        const rootHash = pedersen(treeSize.toString(), bags!);
         return rootHash;
     }
 
@@ -387,12 +537,40 @@ export class MMR implements IMMR {
         return peaksIndexes;
     }
 
+    async precomputeRetrievePeaksHashes(
+        computationUuid: string,
+        givenLastPos?: number
+    ): Promise<string[]> {
+        if (
+            givenLastPos &&
+            givenLastPos >
+                Number(await this.dbGet(`${computationUuid}-lastPos`))
+        )
+            throw new Error('Given position cannot exceed last position');
+        const lastPos =
+            givenLastPos ??
+            Number(await this.dbGet(`${computationUuid}-lastPos`));
+        const peaksIndexes = findPeaks(lastPos);
+        const peaksHashes = [] as string[];
+        for (const peakIndex of peaksIndexes) {
+            let peak = await this.dbHGet('hashes', peakIndex.toString());
+            if (!peak)
+                peak = await this.dbHGet(
+                    `${computationUuid}-hashes`,
+                    peakIndex.toString()
+                );
+            peaksHashes.push(peak!);
+        }
+        return peaksHashes;
+    }
+
     async retrievePeaksHashes(givenLastPos?: number): Promise<string[]> {
         if (givenLastPos && givenLastPos > Number(await this.dbGet('lastPos')))
             throw new Error('Given position cannot exceed last position');
         const lastPos = givenLastPos ?? Number(await this.dbGet('lastPos'));
         const peaksIndexes = findPeaks(lastPos);
         const peaksHashesPromises = peaksIndexes.map(
+            // @ts-ignore
             (p): Promise<string> => this.dbHGet('hashes', p.toString())
         );
         const peaksHashes = await Promise.all(peaksHashesPromises);
