@@ -17,14 +17,23 @@ describe('Merkle tmp precomputation', () => {
         }
     });
 
-    it('should correctly precompute future elements', async () => {
+    it('should correctly precompute future elements and generate/verify future proofs', async () => {
         const lastPosBefore = await mmr.dbGet('lastPos');
         const peaksBefore = await mmr.retrievePeaksHashes();
 
         const computationUuid = '123456';
         await mmr.precomputeInit(computationUuid);
         for (let idx = 1; idx < 100; ++idx) {
-            await mmr.precomputeAppend(computationUuid, idx.toString());
+            const { leafIdx, lastPos } = await mmr.precomputeAppend(
+                computationUuid,
+                idx.toString()
+            );
+            const futureProof = await mmr.precomputeGetProof(
+                computationUuid,
+                Number(leafIdx),
+                lastPos
+            );
+            await mmr.precomputeVerifyProof(computationUuid, futureProof);
             await mmr.precomputeRetrievePeaksHashes(computationUuid);
         }
         await mmr.precomputeReset(computationUuid);

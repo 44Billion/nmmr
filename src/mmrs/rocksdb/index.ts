@@ -460,6 +460,175 @@ export class MMR implements IMMR {
         };
     }
 
+    async precomputeGetProof(
+        computationUuid: string,
+        idx: number,
+        givenLastPos?: number
+    ) {
+        if (!this.db.isOperational())
+            throw new Error('Database not operational');
+
+        if (idx <= 0) throw new Error('Index starts at one');
+        const lastPos = Number(await this.dbGet(`${computationUuid}-lastPos`));
+        if (idx > lastPos) throw new Error('Index out of range');
+        if (!this.isLeaf(idx)) throw new Error('Expected a leaf node');
+        if (givenLastPos && givenLastPos > lastPos)
+            throw new Error('Last pos out of range');
+
+        const index = idx;
+        const value = await this.dbHGet(
+            `${computationUuid}-values`,
+            idx.toString()
+        );
+        if (!value) throw new Error(`Expected value for index ${idx}`);
+
+        const peaks = findPeaks(givenLastPos ?? lastPos);
+        const peaksHashes = await this.precomputeRetrievePeaksHashes(
+            computationUuid,
+            givenLastPos ?? lastPos
+        );
+        let height;
+        const siblingHashes = []; // Proof
+        while (!isPeak(idx, peaks)) {
+            height = getHeight(idx);
+            let hash = await this.dbHGet(
+                `${computationUuid}-hashes`,
+                idx.toString()
+            );
+            if (!hash) hash = await this.dbHGet('hashes', idx.toString());
+            if (!hash) throw new Error(`Expected a hash value for node ${idx}`);
+
+            const isLeft = this.isLeftSibling(idx);
+            const siblingOfs = siblingOffset(height);
+            const siblingIdx = isLeft ? idx + siblingOfs : idx - siblingOfs;
+            let siblingHash = await this.dbHGet(
+                `${computationUuid}-hashes`,
+                siblingIdx.toString()
+            );
+            if (!siblingHash)
+                siblingHash = await this.dbHGet(
+                    'hashes',
+                    siblingIdx.toString()
+                );
+            if (!siblingHash)
+                throw new Error(`Expected a hash value for sibling ${idx}`);
+            siblingHashes.push(siblingHash);
+
+            const parentOfs = parentOffset(height);
+            const parentIdx = isLeft ? idx + parentOfs : siblingIdx + parentOfs;
+            let parentHash = await this.dbHGet(
+                `${computationUuid}-hashes`,
+                parentIdx.toString()
+            );
+            if (!parentHash)
+                parentHash = await this.dbHGet('hashes', parentIdx.toString());
+            if (!parentHash)
+                throw new Error(`Expected a hash value for parent ${idx}`);
+
+            idx = parentIdx; // Jump to parent
+        }
+        return {
+            index,
+            value,
+            peaks,
+            peaksHashes,
+            siblingHashes,
+            lastVisitedNodeIdx: idx,
+        };
+    }
+
+    async precomputeVerifyProof(
+        computationUuid: string,
+        proof: MMRProof,
+        givenLastPos?: number,
+        expectedRootHash?: string
+    ) {
+        if (!this.db.isOperational())
+            throw new Error('Database not operational');
+        if (
+            givenLastPos &&
+            givenLastPos >
+                Number(await this.dbGet(`${computationUuid}-lastPos`))
+        )
+            throw new Error('Last pos out of range');
+
+        let hash = pedersen(proof.index.toString(), proof.value);
+        const storedHash = await this.dbHGet(
+            `${computationUuid}-hashes`,
+            proof.index.toString()
+        );
+        if (hash !== storedHash) {
+            throw new Error('Hash mismatch');
+        }
+        let height;
+        let siblingN = 0;
+        let idx = proof.index;
+        while (!isPeak(idx, proof.peaks)) {
+            height = getHeight(idx);
+            const isLeft = this.isLeftSibling(idx);
+            const siblingHash = proof.siblingHashes[siblingN];
+            if (!siblingHash) throw new Error('Expected sibling hash');
+            const siblingOfs = siblingOffset(height);
+            const siblingIdx = isLeft ? idx + siblingOfs : idx - siblingOfs;
+            let storedSiblingHash = await this.dbHGet(
+                'hashes',
+                siblingIdx.toString()
+            );
+            if (!storedSiblingHash)
+                storedSiblingHash = await this.dbHGet(
+                    `${computationUuid}-hashes`,
+                    siblingIdx.toString()
+                );
+            if (siblingHash !== storedSiblingHash) {
+                throw new Error('Sibling mismatch');
+            }
+            const parentOfs = parentOffset(height);
+            const parentIdx = isLeft ? idx + parentOfs : siblingIdx + parentOfs;
+            let parentHash;
+            if (isLeft) {
+                parentHash = pedersen(
+                    parentIdx.toString(),
+                    pedersen(hash || '', siblingHash || '')
+                );
+            } else {
+                parentHash = pedersen(
+                    parentIdx.toString(),
+                    pedersen(siblingHash || '', hash || '')
+                );
+            }
+            let storedParentHash = await this.dbHGet(
+                'hashes',
+                parentIdx.toString()
+            );
+            if (!storedParentHash)
+                storedParentHash = await this.dbHGet(
+                    `${computationUuid}-hashes`,
+                    parentIdx.toString()
+                );
+
+            if (parentHash !== storedParentHash) {
+                throw new Error('Parent mismatch');
+            }
+            idx = parentIdx; // Jump to parent
+            hash = parentHash;
+            siblingN += 1;
+        }
+        if (this.withRootHash) {
+            const storedRootHash =
+                expectedRootHash ??
+                (await this.dbGet(`${computationUuid}-rootHash`));
+            if (
+                (await this.precomputeBagThePeaks(
+                    computationUuid,
+                    proof.peaks,
+                    givenLastPos ?? undefined
+                )) !== storedRootHash
+            ) {
+                throw new Error('Top hash is not equal to this MMR root hash');
+            }
+        }
+    }
+
     async verifyProof(
         proof: MMRProof,
         givenLastPos?: number,
