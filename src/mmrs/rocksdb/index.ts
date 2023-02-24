@@ -339,20 +339,17 @@ export class MMR implements IMMR {
             peaks = findPeaks(lastPos);
         }
 
-        let bags = await this.dbHGet(
-            'hashes',
-            peaks[peaks.length - 1].toString()
-        );
-        // Look up in tmp hashes if not present in the read-only tree.
+        let bags = await this.dbHGet('hashes', peaks[0].toString());
         if (!bags)
             bags = await this.dbHGet(
                 `${computationUuid}-hashes`,
-                peaks[peaks.length - 1].toString()
+                peaks[0].toString()
             );
-
-        for (let idx = peaks.length - 1; idx >= 0; --idx) {
+        if (peaks.length === 1) {
+            return pedersen(lastPos.toString(), bags!);
+        }
+        for (let idx = 1; idx < peaks.length; ++idx) {
             let peak = await this.dbHGet('hashes', peaks[idx].toString());
-            // Look up in tmp hashes if not present in the read-only tree.
             if (!peak)
                 peak = await this.dbHGet(
                     `${computationUuid}-hashes`,
@@ -360,9 +357,7 @@ export class MMR implements IMMR {
                 );
             bags = pedersen(bags!, peak!);
         }
-        const treeSize = lastPos;
-        const rootHash = pedersen(treeSize.toString(), bags!);
-        return rootHash;
+        return pedersen(lastPos.toString(), bags!);
     }
 
     async bagThePeaks(
@@ -376,18 +371,15 @@ export class MMR implements IMMR {
             peaks = findPeaks(lastPos);
         }
 
-        let bags = await this.dbHGet(
-            'hashes',
-            peaks[peaks.length - 1].toString()
-        );
-
-        for (let idx = peaks.length - 1; idx >= 0; --idx) {
+        let bags = await this.dbHGet('hashes', peaks[0].toString());
+        if (peaks.length === 1) {
+            return pedersen(lastPos.toString(), bags!);
+        }
+        for (let idx = 1; idx < peaks.length; ++idx) {
             const peak = await this.dbHGet('hashes', peaks[idx].toString());
             bags = pedersen(bags!, peak!);
         }
-        const treeSize = lastPos;
-        const rootHash = pedersen(treeSize.toString(), bags!);
-        return rootHash;
+        return pedersen(lastPos.toString(), bags!);
     }
 
     isLeaf(idx: number) {
