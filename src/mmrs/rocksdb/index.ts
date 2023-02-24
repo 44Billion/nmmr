@@ -338,26 +338,22 @@ export class MMR implements IMMR {
         if (!peaks) {
             peaks = findPeaks(lastPos);
         }
-
-        let bags = await this.dbHGet('hashes', peaks[0].toString());
-        if (!bags)
-            bags = await this.dbHGet(
-                `${computationUuid}-hashes`,
-                peaks[0].toString()
-            );
+        const peaksHashes = await this.precomputeRetrievePeaksHashes(
+            computationUuid,
+            lastPos
+        );
         if (peaks.length === 1) {
-            return pedersen(lastPos.toString(), bags!);
+            return pedersen(lastPos.toString(), peaksHashes[0]);
         }
-        for (let idx = 1; idx < peaks.length; ++idx) {
-            let peak = await this.dbHGet('hashes', peaks[idx].toString());
-            if (!peak)
-                peak = await this.dbHGet(
-                    `${computationUuid}-hashes`,
-                    peaks[idx].toString()
-                );
-            bags = pedersen(bags!, peak!);
-        }
-        return pedersen(lastPos.toString(), bags!);
+        const root0 = pedersen(
+            peaksHashes[peaksHashes.length - 2],
+            peaksHashes[peaksHashes.length - 1]
+        );
+        const root = peaksHashes
+            .slice(0, peaksHashes.length - 2)
+            .reverse()
+            .reduce((prev, cur) => pedersen(cur, prev), root0);
+        return pedersen(lastPos.toString(), root);
     }
 
     async bagThePeaks(
@@ -370,16 +366,19 @@ export class MMR implements IMMR {
         if (!peaks) {
             peaks = findPeaks(lastPos);
         }
-
-        let bags = await this.dbHGet('hashes', peaks[0].toString());
+        const peaksHashes = await this.retrievePeaksHashes(lastPos);
         if (peaks.length === 1) {
-            return pedersen(lastPos.toString(), bags!);
+            return pedersen(lastPos.toString(), peaksHashes[0]);
         }
-        for (let idx = 1; idx < peaks.length; ++idx) {
-            const peak = await this.dbHGet('hashes', peaks[idx].toString());
-            bags = pedersen(bags!, peak!);
-        }
-        return pedersen(lastPos.toString(), bags!);
+        const root0 = pedersen(
+            peaksHashes[peaksHashes.length - 2],
+            peaksHashes[peaksHashes.length - 1]
+        );
+        const root = peaksHashes
+            .slice(0, peaksHashes.length - 2)
+            .reverse()
+            .reduce((prev, cur) => pedersen(cur, prev), root0);
+        return pedersen(lastPos.toString(), root);
     }
 
     isLeaf(idx: number) {
