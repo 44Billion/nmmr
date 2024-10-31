@@ -1,33 +1,27 @@
 {
-    "name": "merkle-mountain-ranges",
-    "description": "A TypeScript example implementation of Merkle Mountain Ranges",
-    "author": "Herodotus Dev Ltd",
-    "version": "1.1.8",
-    "main": "dist/src/index.js",
-    "scripts": {
-        "build": "npx tsc",
-        "test": "npx ts-mocha test/**/*.ts --timeout 200000",
-        "postinstall": "npx tsc && cp -R src/pkg dist/src"
-    },
-    "keywords": [
-        "merkle mountain range",
-        "merkle mountain ranges",
-        "merkle tree",
-        "merkle trees",
-        "mmrs",
-        "mmr"
-    ],
-    "license": "GPL-3.0-or-later",
-    "dependencies": {
-        "@types/node": "^18.11.5",
-        "@types/uuid": "^8.3.4",
-        "@types/mocha": "^10.0.0",
-        "ts-mocha": "^10.0.0",
-        "mocha": "^10.1.0",
-        "typescript": "^4.8.4",
-        "level-rocksdb": "^5.0.0",
-        "redis": "^4.5.0",
-        "starknet": "^4.9.0",
-        "uuid": "^9.0.0"
-    }
+  "name": "merkle-mountain-ranges",
+  "description": "A TypeScript example implementation of Merkle Mountain Ranges",
+  "author": "Herodotus Dev Ltd",
+  "version": "1.1.8",
+  "main": "dist/src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "npx mocha \"test/**/*.js\" --timeout 200000"
+  },
+  "keywords": [
+    "merkle mountain range",
+    "merkle mountain ranges",
+    "merkle tree",
+    "merkle trees",
+    "mmrs",
+    "mmr"
+  ],
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "eslint": "^9.14.0",
+    "globals": "^15.12.0",
+    "mocha": "^10.8.2",
+    "neostandard": "^0.11.7",
+    "typescript": "^5.6.3"
+  }
 }

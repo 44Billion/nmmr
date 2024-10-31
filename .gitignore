@@ -3,3 +3,4 @@ dist/
 db/
 rocksdb-db/
 dump.rdb
+.history/
