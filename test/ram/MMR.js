@@ -2,11 +2,18 @@ import assert from 'node:assert'
 import { pedersen } from '../../src/pkg/pedersen_wasm.js'
 import { MMR } from '../../src/mmrs/ram/index.js'
 
+const testFns = {
+  toLeafNode: (data, mmrSize) => pedersen(mmrSize.toString(), data),
+  toParentNode: (leftChild, rightChild, mmrSize) => pedersen(mmrSize.toString(), pedersen(leftChild, rightChild)),
+  toRootNode: (bag, mmrSize) => pedersen(mmrSize.toString(), bag),
+  concatPeaks: (accRightPeaks, leftPeak) => pedersen(accRightPeaks, leftPeak)
+}
+
 describe('Interoperability test', () => {
   let mmr
 
   before(() => {
-    mmr = new MMR()
+    mmr = new MMR(testFns)
   })
 
   it('should generate a Starknet-compatible proof', async () => {
@@ -24,7 +31,7 @@ describe('Append elements to the tree', function () {
   let mmr
 
   before(function () {
-    mmr = new MMR()
+    mmr = new MMR(testFns)
   })
 
   it('append 1', async function () {
@@ -74,7 +81,7 @@ describe('Node content (hashes)', function () {
   let mmr
 
   beforeEach(function () {
-    mmr = new MMR()
+    mmr = new MMR(testFns)
   })
 
   it('1 leaf', async function () {

@@ -1,4 +1,4 @@
-import { pedersen } from '../../pkg/pedersen_wasm.js'
+import { sha256 } from '@noble/hashes/sha256'
 import {
   findPeaks,
   getHeight,
@@ -7,6 +7,42 @@ import {
   peakMapHeight,
   siblingOffset,
 } from '../../lib/helpers.js'
+
+// Add a prefix to non-leaf nodes to avoid collisions
+// Example without prefix:
+//     abcd
+//   ab    cd    = abcd root
+//  a b   c d
+//
+//   abcd        = abcd root
+//  ab  cd
+//
+//   ab          = abcd root
+//  a b   cd
+// Return shortest unit8array size (not fixed size)
+function uintToUint8ArrayLike (n, bytes = []) {
+  do { bytes.unshift(n & 255) } while ((n >>= 8) > 0)
+  return bytes
+}
+function toSha256 (bytes) { return sha256.create().update(bytes).digest() }
+// It works for Uint8Arrays
+function concatArrays (...arrays) { return arrays.reduce((r, v) => [...r, ...v]) }
+/**
+ * @type {{
+ * toLeafNode: (data: Uint8Array, mmrSize: number) => Uint8Array;
+ * toParentNode: (leftChild: Uint8Array, rightChild: Uint8Array, mmrSize: number) => Uint8Array;
+ * toRootNode: (bag: Uint8Array, mmrSize: number) => Uint8Array;
+ * concatPeaks: (accRightPeaks: Uint8Array, leftPeak: Uint8Array) => number[];
+ * }}
+ */
+const nostrFns = {
+  toLeafNode (data, mmrSize) { return toSha256(concatArrays(uintToUint8ArrayLike(mmrSize), data)) },
+  toParentNode (leftChild, rightChild, mmrSize) {
+    return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize), leftChild, rightChild)))
+  },
+  toRootNode (bag, mmrSize) { return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize), bag))) },
+  concatPeaks (accRightPeaks, leftPeak) { return concatArrays(accRightPeaks, leftPeak) }
+}
 
 /**
  * @export
@@ -20,16 +56,17 @@ export class MMR {
   rootHash = ''
   leaves = 0
 
+  constructor (fns = nostrFns) { Object.assign(this, fns) }
+
   /**
-   * @async
-   * @param {string} value
+   * @param {string|Uint8Array} value
    * @returns {Promise<{leavesCount: number, leafIdx: string, rootHash: string|undefined, lastPos: number}>}
    */
-  async append (value) {
+  append (value) {
     // Increment position
     this.lastPos++
 
-    const hash = pedersen(this.lastPos.toString(), value);
+    const hash = this.toLeafNode(value, this.lastPos)
     this.hashes[this.lastPos] = hash
     this.values[this.lastPos] = value
 
@@ -44,17 +81,14 @@ export class MMR {
       const left = this.lastPos - parentOffset(height)
       const right = left + siblingOffset(height)
 
-      const parentHash = pedersen(
-        this.lastPos.toString(),
-        pedersen(this.hashes[left], this.hashes[right])
-      )
+      const parentHash = this.toParentNode(this.hashes[left], this.hashes[right], this.lastPos)
       this.hashes[this.lastPos] = parentHash
 
       height++
     }
 
     // Compute the new root hash
-    this.rootHash = await this.bagThePeaks()
+    this.rootHash = this.bagThePeaks()
 
     ++this.leaves
     return {
@@ -66,19 +100,18 @@ export class MMR {
   }
 
   /**
-   * @async
    * @param {*} [peaks=findPeaks(this.lastPos)]
    * @returns {Promise<string>}
    */
-  async bagThePeaks (peaks = findPeaks(this.lastPos)) {
+  bagThePeaks (peaks = findPeaks(this.lastPos)) {
     if (!peaks.length) throw new Error('Expected peaks to bag')
 
     let bags = this.hashes[peaks[peaks.length - 1]]
     for (let idx = peaks.length - 1; idx >= 0; --idx) {
-      bags = pedersen(bags, this.hashes[peaks[idx]])
+      bags = this.concatPeaks(bags, this.hashes[peaks[idx]])
     }
     const treeSize = this.lastPos
-    const rootHash = pedersen(treeSize.toString(), bags)
+    const rootHash = this.toRootNode(bags, treeSize)
     return rootHash
   }
 
@@ -101,11 +134,10 @@ export class MMR {
   }
 
   /**
-   * @async
    * @param {number} idx
    * @returns {Promise<{index: number, value: string, peaks: number[], peaksHashes: string[], siblingHashes: string[], lastVisitedNodeIdx: number}>}
    */
-  async getProof (idx) {
+  getProof (idx) {
     if (idx <= 0) throw new Error('Index starts at one')
     if (idx > this.lastPos) throw new Error('Index out of range')
     if (!this.isLeaf(idx)) throw new Error('Expected a leaf node')
@@ -148,12 +180,11 @@ export class MMR {
   }
 
   /**
-   * @async
    * @param {MMRProof} proof
    * @returns {*}
    */
-  async verifyProof (proof) {
-    let hash = pedersen(proof.index.toString(), proof.value);
+  verifyProof (proof) {
+    let hash = this.toLeafNode(proof.value, proof.index)
     const storedHash = this.hashes[proof.index]
     if (hash !== storedHash) {
       throw new Error('Hash mismatch')
@@ -174,12 +205,8 @@ export class MMR {
       }
       const parentOfs = parentOffset(height)
       const parentIdx = isLeft ? idx + parentOfs : siblingIdx + parentOfs
-      const parentHash = pedersen(
-        parentIdx.toString(),
-        isLeft
-          ? pedersen(hash, siblingHash)
-          : pedersen(siblingHash, hash)
-      )
+      const children = isLeft ? [hash, siblingHash] : [siblingHash, hash]
+      const parentHash = this.toParentNode(children[0], children[1], parentIdx)
       const storedParentHash = this.hashes[parentIdx]
       if (parentHash !== storedParentHash) {
         throw new Error('Parent mismatch')
@@ -188,7 +215,7 @@ export class MMR {
       hash = parentHash
       siblingN += 1
     }
-    const topHash = await this.bagThePeaks(proof.peaks)
+    const topHash = this.bagThePeaks(proof.peaks)
     if (topHash !== this.rootHash) {
       throw new Error('Top hash is not equal to this MMR root hash')
     }
@@ -217,3 +244,4 @@ export class MMR {
     return peaksHashes
   }
 }
+export default MMR

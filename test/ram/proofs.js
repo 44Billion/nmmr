@@ -1,11 +1,19 @@
 import assert from 'node:assert'
 import { MMR } from '../../src/mmrs/ram/index.js'
+import { pedersen } from '../../src/pkg/pedersen_wasm.js'
+
+const testFns = {
+  toLeafNode: (data, mmrSize) => pedersen(mmrSize.toString(), data),
+  toParentNode: (leftChild, rightChild, mmrSize) => pedersen(mmrSize.toString(), pedersen(leftChild, rightChild)),
+  toRootNode: (bag, mmrSize) => pedersen(mmrSize.toString(), bag),
+  concatPeaks: (accRightPeaks, leftPeak) => pedersen(accRightPeaks, leftPeak)
+}
 
 describe('Merkle proofs generations and verifications', () => {
   let mmr
 
   before(async () => {
-    mmr = new MMR()
+    mmr = new MMR(testFns)
     const leaves = 11
     for (let i = 1; i <= leaves; i++) {
       await mmr.append(i.toString())
