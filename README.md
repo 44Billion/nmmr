@@ -1,4 +1,4 @@
-This is a fork from Herodotus Dev Ltd's merkle-mountain-ranges npm package
+This is a [fork](https://github.com/HerodotusDev/merkle-mountain-ranges) from Herodotus Dev Ltd's merkle-mountain-ranges npm package
 altered to fit Nostr protocol ecosystem
 
 ### Installing the package

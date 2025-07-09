@@ -19,7 +19,8 @@ import {
 //
 //   ab          = abcd root
 //  a b   cd
-// Return shortest unit8array size (not fixed size)
+//
+// Return shortest unit8Array size (not fixed size)
 function uintToUint8ArrayLike (n, bytes = []) {
   do { bytes.unshift(n & 255) } while ((n >>= 8) > 0)
   return bytes
@@ -35,13 +36,13 @@ function concatArrays (...arrays) { return arrays.reduce((r, v) => [...r, ...v])
  * concatPeaks: (accRightPeaks: Uint8Array, leftPeak: Uint8Array) => number[];
  * }}
  */
-const nostrFns = {
-  toLeafNode (data, mmrSize) { return toSha256(concatArrays(uintToUint8ArrayLike(mmrSize), data)) },
+export const nostrFns = {
+  toLeafNode (data, mmrSize /* prefix */) { return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize), data))) },
   toParentNode (leftChild, rightChild, mmrSize) {
     return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize), leftChild, rightChild)))
   },
   toRootNode (bag, mmrSize) { return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize), bag))) },
-  concatPeaks (accRightPeaks, leftPeak) { return concatArrays(accRightPeaks, leftPeak) }
+  concatPeaks (accRightPeaks, leftPeak) { return concatArrays(leftPeak, accRightPeaks) }
 }
 
 /**
