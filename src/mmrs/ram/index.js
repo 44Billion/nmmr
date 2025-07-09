@@ -108,7 +108,7 @@ export class MMR {
     if (!peaks.length) throw new Error('Expected peaks to bag')
 
     let bags = this.hashes[peaks[peaks.length - 1]]
-    for (let idx = peaks.length - 1; idx >= 0; --idx) {
+    for (let idx = peaks.length - 2; idx >= 0; --idx) {
       bags = this.concatPeaks(bags, this.hashes[peaks[idx]])
     }
     const treeSize = this.lastPos
