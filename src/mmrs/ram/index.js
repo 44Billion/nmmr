@@ -57,7 +57,17 @@ export class MMR {
   rootHash = ''
   leaves = 0
 
-  constructor (fns = nostrFns) { Object.assign(this, fns) }
+  /**
+   * Creates an instance of MMR.
+   * @param {object} [fns=nostrFns]
+   * @param {(data: Uint8Array, mmrSize: number) => Uint8Array} [fns.toLeafNode]
+   * @param {(leftChild: Uint8Array, rightChild: Uint8Array, mmrSize: number) => Uint8Array} [fns.toParentNode]
+   * @param {(bag: Uint8Array, mmrSize: number) => Uint8Array} [fns.toRootNode]
+   * @param {(accRightPeaks: Uint8Array, leftPeak: Uint8Array) => number[]} [fns.concatPeaks]
+   * @param {object} [options]
+   * @param {boolean} [options.isDebugging=false]
+   */
+  constructor (fns = nostrFns, options) { Object.assign(this, fns, options, options?.isDebugging && { values: {} }) }
 
   /**
    * @param {string|Uint8Array} value
@@ -69,7 +79,7 @@ export class MMR {
 
     const hash = this.toLeafNode(value, this.lastPos)
     this.hashes[this.lastPos] = hash
-    this.values[this.lastPos] = value
+    if (this.isDebugging) this.values[this.lastPos] = value
 
     let height = 0
     const pos = this.lastPos
@@ -88,15 +98,17 @@ export class MMR {
       height++
     }
 
-    // Compute the new root hash
-    this.rootHash = this.bagThePeaks()
+    if (this.isDebugging) {
+      // Compute the new root hash
+      this.rootHash = this.bagThePeaks()
+    }
 
     ++this.leaves
     return {
       leavesCount: this.leaves,
       leafIdx: pos.toString(),
-      rootHash: this.rootHash,
-      lastPos: this.lastPos
+      lastPos: this.lastPos,
+      ...(this.isDebugging && { rootHash: this.rootHash })
     }
   }
 
@@ -144,8 +156,11 @@ export class MMR {
     if (!this.isLeaf(idx)) throw new Error('Expected a leaf node')
 
     const index = idx
-    const value = this.values[idx]
-    if (!value) throw new Error(`Expected value for index ${idx}`)
+    let value
+    if (this.isDebugging) {
+      value = this.values[idx]
+      if (!value) throw new Error(`Expected value for index ${idx}`)
+    }
 
     const peaks = findPeaks(this.lastPos)
     const peaksHashes = peaks.map((p) => this.hashes[p])
@@ -172,23 +187,34 @@ export class MMR {
     }
     return {
       index, // Proving slot index
-      value, // Proving slot value
       peaks, // Peaks indexes
       peaksHashes, // Peak hashes
       siblingHashes, // Path (sibling hashes)
-      lastVisitedNodeIdx: idx // Debug only
+      ...(this.isDebugging && {
+        value, // Proving slot value
+        lastVisitedNodeIdx: idx // Debug only
+      })
     }
   }
 
   /**
    * @param {MMRProof} proof
+   * @param {Uint8Array} hash
+   * @param {Uint8Array} rootHash
    * @returns {*}
    */
-  verifyProof (proof) {
-    let hash = this.toLeafNode(proof.value, proof.index)
-    const storedHash = this.hashes[proof.index]
-    if (hash !== storedHash) {
-      throw new Error('Hash mismatch')
+  verifyProof (proof, hash /* leaf */, rootHash = this.rootHash) {
+    hash ??= this.toLeafNode(proof.value, proof.index)
+    const topHash = this.bagThePeaks(proof.peaks)
+    if (topHash !== rootHash) {
+      throw new Error('Top hash is not equal to this MMR root hash')
+    }
+
+    if (this.isDebugging) {
+      const storedHash = this.hashes[proof.index]
+      if (hash !== storedHash) {
+        throw new Error('Hash mismatch')
+      }
     }
     let height
     let siblingN = 0
@@ -200,25 +226,25 @@ export class MMR {
       if (!siblingHash) throw new Error('Expected sibling hash')
       const siblingOfs = siblingOffset(height)
       const siblingIdx = isLeft ? idx + siblingOfs : idx - siblingOfs
-      const storedSiblingHash = this.hashes[siblingIdx]
-      if (siblingHash !== storedSiblingHash) {
-        throw new Error('Sibling mismatch')
+      if (this.isDebugging) {
+        const storedSiblingHash = this.hashes[siblingIdx]
+        if (siblingHash !== storedSiblingHash) {
+          throw new Error('Sibling mismatch')
+        }
       }
       const parentOfs = parentOffset(height)
       const parentIdx = isLeft ? idx + parentOfs : siblingIdx + parentOfs
       const children = isLeft ? [hash, siblingHash] : [siblingHash, hash]
       const parentHash = this.toParentNode(children[0], children[1], parentIdx)
-      const storedParentHash = this.hashes[parentIdx]
-      if (parentHash !== storedParentHash) {
-        throw new Error('Parent mismatch')
+      if (this.isDebugging) {
+        const storedParentHash = this.hashes[parentIdx]
+        if (parentHash !== storedParentHash) {
+          throw new Error('Parent mismatch')
+        }
       }
       idx = parentIdx // Jump to parent
       hash = parentHash
       siblingN += 1
-    }
-    const topHash = this.bagThePeaks(proof.peaks)
-    if (topHash !== this.rootHash) {
-      throw new Error('Top hash is not equal to this MMR root hash')
     }
   }
 

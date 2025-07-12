@@ -13,7 +13,7 @@ describe('Interoperability test', () => {
   let mmr
 
   before(() => {
-    mmr = new MMR(testFns)
+    mmr = new MMR(testFns, { isDebugging: true })
   })
 
   it('should generate a Starknet-compatible proof', async () => {

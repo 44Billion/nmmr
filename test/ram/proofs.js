@@ -13,7 +13,7 @@ describe('Merkle proofs generations and verifications', () => {
   let mmr
 
   before(async () => {
-    mmr = new MMR(testFns)
+    mmr = new MMR(testFns, { isDebugging: true })
     const leaves = 11
     for (let i = 1; i <= leaves; i++) {
       await mmr.append(i.toString())

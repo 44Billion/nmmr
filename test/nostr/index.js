@@ -9,7 +9,7 @@ const noPrefixFns = {
 }
 
 it('returns peaks in the right order', () => {
-  const mmr = new MMR(noPrefixFns)
+  const mmr = new MMR(noPrefixFns, { isDebugging: true })
   mmr.append('a')
   mmr.append('b')
   let { leafIdx, intLeafIdx = parseInt(leafIdx) } = mmr.append('c')
@@ -24,7 +24,7 @@ it('produces correct hashes', () => {
   //     abcd
   //   ab     cd
   // a  b    c  d    e
-  const mmr = new MMR(noPrefixFns)
+  const mmr = new MMR(noPrefixFns, { isDebugging: true })
   mmr.append('a')
   mmr.append('b')
   mmr.append('c')
@@ -35,7 +35,7 @@ it('produces correct hashes', () => {
 
 it('works with binary data', () => {
   const t = new TextEncoder()
-  const mmr = new MMR(noPrefixFns)
+  const mmr = new MMR(noPrefixFns, { isDebugging: true })
   mmr.append(t.encode('a'))
   const currentProof = mmr.getProof(parseInt(mmr.append(t.encode('b')).leafIdx))
   assert.doesNotThrow(() => mmr.verifyProof(currentProof))
