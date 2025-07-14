@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import MMR from '../../src/mmrs/ram/index.js'
+import NMMR from '../../src/lib/nmmr.js'
 
 const noPrefixFns = {
   toLeafNode (data, mmrSize) { return data },
@@ -40,4 +41,23 @@ it('works with binary data', () => {
   const currentProof = mmr.getProof(parseInt(mmr.append(t.encode('b')).leafIdx))
   assert.doesNotThrow(() => mmr.verifyProof(currentProof))
   assert.doesNotThrow(() => mmr.bagThePeaks())
+})
+
+// It needs the sibling hashes.
+// It doesn't need the peak hash when it is the same as the leaf hash (1st leaf, 3rd, 5th...)
+// It doesn't need peak hashes that can be calculated from the leaf hash and their sibling hashes
+it('has shortest proof', async () => {
+  const t = new TextEncoder()
+  const nmmr = new NMMR()
+  await nmmr.append(t.encode('a'))
+  await nmmr.append(t.encode('b'))
+  await nmmr.append(t.encode('c'))
+  await nmmr.append(t.encode('c'))
+  await nmmr.append(t.encode('d'))
+  await nmmr.append(t.encode('e'))
+  await nmmr.append(t.encode('f'))
+  await nmmr.append(t.encode('g'))
+  for await (const chunk of nmmr.getChunks()) {
+    assert.doesNotThrow(() => NMMR.verifyProof(chunk))
+  }
 })
