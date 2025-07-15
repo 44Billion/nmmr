@@ -4,15 +4,36 @@ altered to fit Nostr protocol ecosystem
 ### Installing the package
 
 ```sh
-$> npm i nostr-mmr
+$> npm i nmmr
 ```
 
-### Using the Merkle Mountaing Range
+### Usage
 
 ```js
-import MMR from 'nostr-mmr'
+import nmmr from 'nmmr'
 
-const mmr = new Mmr()
+// Append data as bytes then save chunks to nostr event
+const t = new TextEncoder()
+const nmmr = new NMMR()
+await nmmr.append(t.encode('a'))
+await nmmr.append(t.encode('b'))
+for await (const chunk of nmmr.getChunks()) {
+  // You should code this part yourself
+  await createAndPublishNostrEvent(chunk)
+}
+
+// Later verify some chunk is really part of the whole
+NMMR.verifyProof(chunk)
+```
+
+#### Manually Using the Merkle Mountaing Range
+
+Note: Prefer using the above default export.
+
+```js
+import { InMemoryMMR } from 'nmmr'
+
+const mmr = new InMemoryMMR()
 const leaves = 11 // Total node size will be 19
 for (let idx = 0; idx < leaves; ++idx) {
   await mmr.append((idx + 1).toString()) // Leaf number starts at 1 in this implementation.

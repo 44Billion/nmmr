@@ -1,21 +1,13 @@
 {
-  "name": "nostr-mountain-ranges",
+  "name": "nmmr",
+  "author": "Arthur França - nostr:npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2",
+  "license": "GPL-3.0-or-later",
   "description": "Merkle Mountain Ranges as used on the Nostr protocol",
-  "version": "1.0",
-  "main": "src/mmrs/ram/index.js",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "test": "npx mocha \"test/**/*.js\" --timeout 200000"
   },
-  "keywords": [
-    "merkle mountain range",
-    "merkle mountain ranges",
-    "merkle tree",
-    "merkle trees",
-    "mmrs",
-    "mmr"
-  ],
-  "license": "GPL-3.0-or-later",
   "devDependencies": {
     "eslint": "^9.14.0",
     "globals": "^15.12.0",
@@ -25,5 +17,30 @@
   },
   "dependencies": {
     "@noble/hashes": "^1.5.0"
-  }
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "keywords": [
+    "merkle mountain range",
+    "merkle mountain ranges",
+    "merkle tree",
+    "merkle trees",
+    "mmrs",
+    "mmr",
+    "nostr",
+    "nmmr"
+  ],
+  "files": [
+    "src/index.js",
+    "src/lib",
+    "src/mmrs",
+    "react",
+    "shared",
+    "signals",
+    "index.js",
+    "LICENSE",
+    "package.json",
+    "README.md"
+  ]
 }
