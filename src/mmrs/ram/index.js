@@ -52,7 +52,7 @@ export const nostrFns = {
   toParentNode (leftChild, rightChild, mmrSize) {
     return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize - 1), leftChild, rightChild)))
   },
-  toRootNode (bag, mmrSize) { return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize - 1), bag))) },
+  toRootNode (bag, mmrSize) { return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize), bag))) },
   concatPeaks (accRightPeaks, leftPeak) { return concatArrays(leftPeak, accRightPeaks) }
 }
 
