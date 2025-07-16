@@ -3,7 +3,7 @@
   "author": "Arthur França - nostr:npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2",
   "license": "GPL-3.0-or-later",
   "description": "Merkle Mountain Ranges as used on the Nostr protocol",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "test": "npx mocha \"test/**/*.js\" --timeout 200000"
