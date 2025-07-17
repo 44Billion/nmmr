@@ -35,8 +35,8 @@ export default class NMMR {
   }
 
   async * getChunks () {
-    let leafIndex = 0 // just conting leaves, not all nodes
-    const rootHash = bytesToHex(this.getRoot())
+    let leafIndex = 0 // just counting leaves, not all nodes
+    const rootX = this.getRoot()
     for await (const line of this.file.readLines()) {
       const { hash: leafValueHash, data: leafValue } = this.fromLine(line)
       const nodeIndex = leafIndexToNodeIndex(leafIndex)
@@ -48,7 +48,7 @@ export default class NMMR {
         x: bytesToHex(leafValueHash), // dTag; not the leafHash, which is leafValueHash with a prefix
         index: leafIndex.toString(), // chunk 1/n
         length: this.leafLength.toString(), // n
-        rootX: rootHash, // tree identifier
+        rootX, // tree identifier
         proof // sibling hashes
       }
       leafIndex++
@@ -56,7 +56,7 @@ export default class NMMR {
   }
 
   // run this after appending every leaf
-  getRoot () { return (this.root ??= this.tree.bagThePeaks()) }
+  getRoot () { return (this.root ??= bytesToHex(this.tree.bagThePeaks())) }
 
   static verifyProof (toVerify, { shouldVerifyContent = !!toVerify.contentBytes } = {}) {
     if (shouldVerifyContent) this.verifyLeafValue(toVerify)
