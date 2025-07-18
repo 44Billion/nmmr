@@ -1,5 +1,5 @@
 import NMMR from './lib/nmmr.js'
-import { MMR as InMemoryMMR } from './mmrs/ram.js'
+import { MMR as InMemoryMMR } from './mmrs/ram/index.js'
 
 export { InMemoryMMR }
 export default NMMR
