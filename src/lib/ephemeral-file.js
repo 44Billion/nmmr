@@ -161,7 +161,7 @@ export default class EphemeralFile {
           EphemeralFile.#isFirstWrite = false
         }
 
-        if (!doesDirExist) fs.mkdirSync(dir, { recursive: true })
+        if (!doesDirExist) fs.mkdirSync(dir, { recursive: true, mode: 0o777 /* world-writable */ })
         await fs.promises.appendFile(this.#filename, line + '\n')
       } catch (err) {
         console.error('Error appending to file:', err)
