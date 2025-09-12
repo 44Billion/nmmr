@@ -19,7 +19,7 @@ export default class NMMR {
     if (isBrowser) {
       return { hash, data }
     } else {
-      return `${bytesToHex(hash)}:${bytesToHex(data)}\n`
+      return `${bytesToHex(hash)}:${bytesToHex(data)}`
     }
   }
 
