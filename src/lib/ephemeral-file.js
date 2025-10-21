@@ -179,24 +179,65 @@ export default class EphemeralFile {
     try {
       if (isBrowser) {
         const db = await EphemeralFile.#getDB()
-        const tx = db.transaction(STORE_NAME, 'readonly')
-        const store = tx.objectStore(STORE_NAME)
-        const index = store.index('filename')
-        const cursorRequest = index.openCursor(IDBKeyRange.only(this.#filename))
+        let lastKey = null
+        let hasMore = true
 
-        let cursor = await new Promise((resolve, reject) => {
-          cursorRequest.onsuccess = () => resolve(cursorRequest.result)
-          cursorRequest.onerror = () => reject(cursorRequest.error)
-        })
+        while (hasMore) {
+          const tx = db.transaction(STORE_NAME, 'readonly')
+          const store = tx.objectStore(STORE_NAME)
+          const index = store.index('filename')
 
-        while (cursor) {
-          this.#maybeSetContentFieldByValue(cursor.value)
-          yield this.#getFields(cursor.value)
-          cursor.continue()
-          cursor = await new Promise((resolve, reject) => {
-            cursorRequest.onsuccess = () => resolve(cursorRequest.result)
-            cursorRequest.onerror = () => reject(cursorRequest.error)
-          })
+          // Start from the last key we processed, or from the beginning
+          const range = lastKey
+            ? IDBKeyRange.bound([this.#filename, lastKey], [this.#filename, []], true, false)
+            : IDBKeyRange.only(this.#filename)
+
+          const cursorRequest = index.openCursor(range)
+
+          try {
+            let cursor = await new Promise((resolve, reject) => {
+              cursorRequest.onsuccess = () => resolve(cursorRequest.result)
+              cursorRequest.onerror = () => reject(cursorRequest.error)
+            })
+
+            if (!cursor) {
+              hasMore = false
+              break
+            }
+
+            while (cursor) {
+              this.#maybeSetContentFieldByValue(cursor.value)
+              const currentValue = this.#getFields(cursor.value)
+              lastKey = cursor.primaryKey
+
+              const nextCursorPromise = new Promise((resolve, reject) => {
+                cursorRequest.onsuccess = () => resolve(cursorRequest.result)
+                cursorRequest.onerror = () => reject(cursorRequest.error)
+              })
+
+              try {
+                cursor.continue()
+                yield currentValue
+                cursor = await nextCursorPromise
+              } catch (err) {
+                if (err.name === 'TransactionInactiveError') {
+                  // Transaction timed out, break and start a new one
+                  break
+                }
+                throw err
+              }
+            }
+
+            if (!cursor) {
+              hasMore = false
+            }
+          } catch (err) {
+            if (err.name === 'TransactionInactiveError') {
+              // Continue with a new transaction
+              continue
+            }
+            throw err
+          }
         }
       } else {
         file = await fs.promises.open(this.#filename)
