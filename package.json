@@ -4,7 +4,7 @@
   "repository": "github:44billion/nmmr",
   "license": "GPL-3.0-or-later",
   "description": "Merkle Mountain Ranges as used on the Nostr protocol",
-  "version": "1.0.7",
+  "version": "1.0.9",
   "type": "module",
   "scripts": {
     "test": "npx mocha \"test/**/*.js\" --timeout 200000"

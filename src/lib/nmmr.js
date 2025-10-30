@@ -44,7 +44,7 @@ export default class NMMR {
 
       // this will be used at nostr event
       yield {
-        contentBytes: leafValue, // encode to base122 and place at .content
+        contentBytes: leafValue, // encode to base93 and place at .content
         x: bytesToHex(leafValueHash), // dTag; not the leafHash, which is leafValueHash with a prefix
         index: leafIndex.toString(), // chunk 1/n
         length: this.leafLength.toString(), // n

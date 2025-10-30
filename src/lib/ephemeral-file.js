@@ -107,7 +107,7 @@ export default class EphemeralFile {
 
   #contentField
   #maybeSetContentFieldByLine (line) {
-    return (this.#contentField ??= typeof strOrObj === 'string'
+    return (this.#contentField ??= typeof line === 'string'
       ? '__str__'
       : Array.isArray(line)
         ? '__obj__'
@@ -180,60 +180,59 @@ export default class EphemeralFile {
       if (isBrowser) {
         const db = await EphemeralFile.#getDB()
         let lastKey = null
-        let hasMore = true
+        let reachedEnd = false
 
-        while (hasMore) {
+        while (!reachedEnd) {
           const tx = db.transaction(STORE_NAME, 'readonly')
           const store = tx.objectStore(STORE_NAME)
           const index = store.index('filename')
 
-          // Start from the last key we processed, or from the beginning
-          const range = lastKey
-            ? IDBKeyRange.bound([this.#filename, lastKey], [this.#filename, []], true, false)
-            : IDBKeyRange.only(this.#filename)
-
-          const cursorRequest = index.openCursor(range)
+          const cursorRequest = lastKey === null
+            ? index.openCursor(IDBKeyRange.only(this.#filename))
+            : store.openCursor(IDBKeyRange.lowerBound(lastKey + 1))
+          const awaitCursor = () => new Promise((resolve, reject) => {
+            cursorRequest.onsuccess = () => resolve(cursorRequest.result)
+            cursorRequest.onerror = () => reject(cursorRequest.error)
+          })
 
           try {
-            let cursor = await new Promise((resolve, reject) => {
-              cursorRequest.onsuccess = () => resolve(cursorRequest.result)
-              cursorRequest.onerror = () => reject(cursorRequest.error)
-            })
+            let cursor = await awaitCursor()
+
+            if (cursor && lastKey !== null) {
+              while (cursor && cursor.value.filename !== this.#filename) {
+                const skipPromise = awaitCursor()
+                cursor.continue()
+                cursor = await skipPromise
+              }
+            }
 
             if (!cursor) {
-              hasMore = false
-              break
+              reachedEnd = true
+              continue
             }
 
             while (cursor) {
               this.#maybeSetContentFieldByValue(cursor.value)
               const currentValue = this.#getFields(cursor.value)
-              lastKey = cursor.primaryKey
+              const currentKey = cursor.primaryKey
 
               const nextCursorPromise = new Promise((resolve, reject) => {
                 cursorRequest.onsuccess = () => resolve(cursorRequest.result)
                 cursorRequest.onerror = () => reject(cursorRequest.error)
               })
 
-              try {
-                cursor.continue()
-                yield currentValue
-                cursor = await nextCursorPromise
-              } catch (err) {
-                if (err.name === 'TransactionInactiveError') {
-                  // Transaction timed out, break and start a new one
-                  break
-                }
-                throw err
-              }
+              cursor.continue()
+
+              yield currentValue
+
+              lastKey = currentKey
+              cursor = await nextCursorPromise
             }
 
-            if (!cursor) {
-              hasMore = false
-            }
+            reachedEnd = true
           } catch (err) {
             if (err.name === 'TransactionInactiveError') {
-              // Continue with a new transaction
+              reachedEnd = false
               continue
             }
             throw err
