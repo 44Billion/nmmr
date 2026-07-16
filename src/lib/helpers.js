@@ -5,34 +5,29 @@
  * @returns {number[]}
  */
 export const findPeaks = num => {
+  assertSafeUint(num, 'MMR size')
   if (num === 0) return []
 
-  // Check for siblings without parents
-  if (getHeight(num + 1) > getHeight(num)) return []
+  const peaks = []
+  let consumed = 0
+  let remaining = num
+  let previousHeight = Infinity
 
-  let top = 1
-  while (top - 1 <= num) {
-    top <<= 1
-  }
-  top = (top >> 1) - 1
-  if (top === 0) {
-    return [1]
+  while (remaining > 0) {
+    // BigInt avoids forming the potentially unsafe Number MAX_SAFE_INTEGER + 1.
+    const height = (BigInt(remaining) + 1n).toString(2).length - 2
+    const perfectTreeSize = (2 ** (height + 1)) - 1
+
+    // Two adjacent perfect trees with the same height would already have
+    // produced their parent, so this is not a valid completed MMR size.
+    if (height >= previousHeight) return []
+
+    consumed += perfectTreeSize
+    peaks.push(consumed)
+    remaining -= perfectTreeSize
+    previousHeight = height
   }
 
-  const peaks = [top]
-  let peak = top
-  let outer = true
-  while (outer) {
-    peak = bintreeJumpRightSibling(peak)
-    while (peak > num) {
-      peak = bintreeMoveDownLeft(peak)
-      if (peak === 0) {
-        outer = false
-        break
-      }
-    }
-    if (outer) peaks.push(peak)
-  }
   return peaks
 }
 
@@ -65,8 +60,8 @@ export function bitLength (num) {
  * @returns {boolean}
  */
 export function allOnes (num) {
-  // eslint-disable-next-line eqeqeq
-  return (1 << bitLength(num)) - 1 == num
+  assertSafeUint(num)
+  return (2 ** bitLength(num)) - 1 === num
 }
 
 /**
@@ -89,23 +84,22 @@ export function leadingZeros (num) {
  * @returns {Array}
  */
 export function peakMapHeight (size) {
+  assertSafeUint(size, 'MMR size')
   if (size === 0) {
     return [0, 0]
   }
-  let peakSize =
-      // uint64 size
-      BigInt('18446744073709551615') >> BigInt(leadingZeros(size))
-  let peakMap = 0
-  // eslint-disable-next-line eqeqeq
-  while (peakSize != BigInt(0)) {
-    peakMap <<= 1
-    if (size >= peakSize) {
-      size -= Number(peakSize)
-      peakMap |= 1
+  let remaining = BigInt(size)
+  let peakSize = (1n << BigInt(bitLength(size))) - 1n
+  let peakMap = 0n
+  while (peakSize !== 0n) {
+    peakMap <<= 1n
+    if (remaining >= peakSize) {
+      remaining -= peakSize
+      peakMap |= 1n
     }
-    peakSize >>= BigInt(1)
+    peakSize >>= 1n
   }
-  return [peakMap, size]
+  return [Number(peakMap), Number(remaining)]
 }
 
 /**
@@ -118,10 +112,12 @@ export function peakMapHeight (size) {
  * @returns {number}
  */
 export const getHeight = num => {
+  assertSafeUint(num, 'node index')
+  if (num === 0) throw new Error('Node index must be positive.')
   let h = num
   // Travel left until reaching leftmost branch (all bits 1)
   while (!allOnes(h)) {
-    h = h - ((1 << (bitLength(h) - 1)) - 1)
+    h -= (2 ** (bitLength(h) - 1)) - 1
   }
 
   return bitLength(h) - 1
@@ -134,7 +130,8 @@ export const getHeight = num => {
  * @returns {number}
  */
 export const siblingOffset = height => {
-  return (2 << height) - 1
+  assertSafeUint(height, 'height')
+  return (2 ** (height + 1)) - 1
 }
 
 /**
@@ -144,7 +141,8 @@ export const siblingOffset = height => {
  * @returns {number}
  */
 export const parentOffset = height => {
-  return 2 << height
+  assertSafeUint(height, 'height')
+  return 2 ** (height + 1)
 }
 
 /**
@@ -153,37 +151,18 @@ export const parentOffset = height => {
  * @param {number} num
  * @returns {number}
  */
-const bintreeJumpRightSibling = num => {
-  const height = getHeight(num)
-  return num + (1 << (height + 1)) - 1
-}
-
-/**
- * Jump down left from `num`
- *
- * @param {number} num
- * @returns {number}
- */
-const bintreeMoveDownLeft = num => {
-  const height = getHeight(num)
-  if (height === 0) {
-    return 0
-  }
-  return num - (1 << height)
-}
-
 /**
  * Calculates the Hamming weight (popcount) of a non-negative integer.
  * Popcount is the number of set bits (1s) in the binary representation of the number.
  * @param {number} num The integer for which to calculate the popcount.
  * @returns {number} The popcount of the number.
  */
-function popcount (num) {
-  if (num < 0) throw new Error('Input to popcount must be non-negative.')
+export function popcount (num) {
+  assertSafeUint(num, 'popcount input')
   let count = 0
-  let tempNum = num
-  while (tempNum > 0) {
-    tempNum &= (tempNum - 1) // Brian Kernighan's algorithm: clears the least significant set bit
+  let tempNum = BigInt(num)
+  while (tempNum > 0n) {
+    tempNum &= tempNum - 1n
     count++
   }
   return count
@@ -198,12 +177,14 @@ function popcount (num) {
  * @returns {number} The 0-indexed MMR node index for the specified leaf.
  */
 export function leafIndexToNodeIndex (n) {
-  if (n < 0) throw new Error('Leaf index (n) must be non-negative.')
+  assertSafeUint(n, 'Leaf index')
 
   // The core formula for calculating the MMR node index
   // This assumes the MMR's internal nodes are counted towards the total node index
   // in a compacted, left-to-right manner.
-  return n + (n - popcount(n))
+  const result = (2 * n) - popcount(n)
+  if (!Number.isSafeInteger(result)) throw new Error('Leaf index produces an unsafe node index.')
+  return result
 }
 
 // getTreeSizeFromNumberOfLeaves(8) => 14
@@ -215,12 +196,46 @@ export function leafIndexToNodeIndex (n) {
  * @returns {number} The total number of nodes. (higher peak 0-indexed index + 1)
  */
 export function getTreeSizeFromNumberOfLeaves (n) {
-  if (n < 0) throw new Error('Number of leaves (n) must be a non-negative integer.')
+  assertSafeUint(n, 'Number of leaves')
 
   // The formula: 2 * n - popcount(n)
   // n = number of leaves
   // popcount(n) = number of peaks (which is also the number of perfect trees that compose the MMR)
-  return (2 * n) - popcount(n)
+  const result = (2 * n) - popcount(n)
+  if (!Number.isSafeInteger(result)) throw new Error('Number of leaves produces an unsafe tree size.')
+  return result
+}
+
+/**
+ * Return the shortest unsigned big-endian representation of an integer.
+ * Zero is represented by one zero byte.
+ *
+ * @param {number|bigint} value
+ * @returns {Uint8Array}
+ */
+export function uintToUint8ArrayLike (value) {
+  let n
+  if (typeof value === 'bigint') {
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Unsigned integer is out of range.')
+    n = value
+  } else {
+    assertSafeUint(value, 'Unsigned integer')
+    n = BigInt(value)
+  }
+
+  const bytes = []
+  do {
+    bytes.unshift(Number(n % 256n))
+    n /= 256n
+  } while (n > 0n)
+  return Uint8Array.from(bytes)
+}
+
+export function assertSafeUint (value, name = 'Value') {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative safe integer.`)
+  }
+  return value
 }
 
 export function bytesToHex (uint8aBytes) {
@@ -228,6 +243,9 @@ export function bytesToHex (uint8aBytes) {
 }
 
 export function hexToBytes (hexString) {
+  if (typeof hexString !== 'string' || hexString.length % 2 !== 0 || !/^[0-9a-f]*$/.test(hexString)) {
+    throw new Error('invalid hex')
+  }
   const arr = new Uint8Array(hexString.length / 2) // create result array
   for (let i = 0; i < arr.length; i++) {
     const j = i * 2

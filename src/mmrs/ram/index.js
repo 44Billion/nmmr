@@ -6,10 +6,10 @@ import {
   peakMapHeight,
   siblingOffset,
   toSha256,
-  bytesToHex,
-  hexToBytes,
   leafIndexToNodeIndex,
-  getTreeSizeFromNumberOfLeaves
+  getTreeSizeFromNumberOfLeaves,
+  uintToUint8ArrayLike,
+  assertSafeUint
 } from '../../lib/helpers.js'
 
 // Add a prefix to non-leaf nodes to avoid collisions
@@ -24,13 +24,16 @@ import {
 //   ab          = abcd root
 //  a b   cd
 //
-// Return shortest unit8Array size (not fixed size)
-function uintToUint8ArrayLike (n, bytes = []) {
-  do { bytes.unshift(n & 255) } while ((n >>= 8) > 0)
-  return bytes
+function concatArrays (...arrays) {
+  const normalized = arrays.map(value => value instanceof Uint8Array ? value : Uint8Array.from(value))
+  const result = new Uint8Array(normalized.reduce((total, value) => total + value.length, 0))
+  let offset = 0
+  for (const value of normalized) {
+    result.set(value, offset)
+    offset += value.length
+  }
+  return result
 }
-// It works for Uint8Arrays
-function concatArrays (...arrays) { return arrays.reduce((r, v) => [...r, ...v]) }
 /**
  * @type {{
  * toLeafNode: (data: Uint8Array, mmrSize: number) => Uint8Array;
@@ -43,16 +46,13 @@ export const nostrFns = {
   // By having this prefix, we can be sure of the correct leaf index
   // It also avoids duplicate leaf hashes
   // Hashing just the data makes it addressable no matter the index
-  // Decided to not do toSha256(theReturn) because dataHash is alreasy sha256,
-  // we would be hashing twice.
-  // Also, didn't want to have to carry both
-  // - the leaf value hash to prove the chunk data is correct and make it content-addressable
-  // - the leaf hash to prove the chunk is part of the full data
-  toLeafNode (data, mmrSize /* prefix */, dataHash = toSha256(data)) { return new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize - 1), dataHash)) },
-  toParentNode (leftChild, rightChild, mmrSize) {
-    return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize - 1), leftChild, rightChild)))
+  toLeafNode (data, mmrSize /* prefix */, dataHash = toSha256(data)) {
+    return toSha256(concatArrays(uintToUint8ArrayLike(mmrSize - 1), dataHash))
   },
-  toRootNode (bag, mmrSize) { return toSha256(new Uint8Array(concatArrays(uintToUint8ArrayLike(mmrSize), bag))) },
+  toParentNode (leftChild, rightChild, mmrSize) {
+    return toSha256(concatArrays(uintToUint8ArrayLike(mmrSize - 1), leftChild, rightChild))
+  },
+  toRootNode (bag, mmrSize) { return toSha256(concatArrays(uintToUint8ArrayLike(mmrSize), bag)) },
   concatPeaks (accRightPeaks, leftPeak) { return concatArrays(leftPeak, accRightPeaks) }
 }
 
@@ -87,6 +87,7 @@ export class MMR {
    */
   append (value, valueHash) {
     // Increment position
+    if (!Number.isSafeInteger(this.lastPos + 1)) throw new Error('MMR node position would be unsafe.')
     this.lastPos++
 
     const hash = this.toLeafNode(value, this.lastPos, valueHash)
@@ -99,6 +100,7 @@ export class MMR {
     // If the height of the next node is higher then the height of current node
     // It means that the next node is a parent of current, thus merging happens
     while (getHeight(this.lastPos + 1) > height) {
+      if (!Number.isSafeInteger(this.lastPos + 1)) throw new Error('MMR parent position would be unsafe.')
       this.lastPos++
 
       const left = this.lastPos - parentOffset(height)
@@ -154,8 +156,8 @@ export class MMR {
    */
   static isLeftSibling (idx) {
     const [peakMap, height] = peakMapHeight(idx - 1)
-    const peak = 1 << height
-    return (peakMap & peak) === 0
+    const peak = 1n << BigInt(height)
+    return (BigInt(peakMap) & peak) === 0n
   }
 
   /**
@@ -211,7 +213,7 @@ export class MMR {
 
   /**
    * @param {number} idx The leaf node index, not the leaf-only array index
-   * @returns {string[]}
+   * @returns {Array<*>}
    */
   getProofArray (idx) {
     if (idx <= 0) throw new Error('Index starts at one')
@@ -230,7 +232,7 @@ export class MMR {
       const siblingIdx = isLeft ? currentIdx + siblingOfs : currentIdx - siblingOfs
       const siblingHash = this.hashes[siblingIdx]
       if (!siblingHash) throw new Error(`Expected a hash value for sibling ${currentIdx}`)
-      proof.push(bytesToHex(siblingHash))
+      proof.push(siblingHash)
 
       const parentOfs = parentOffset(height)
       currentIdx = isLeft ? currentIdx + parentOfs : siblingIdx + parentOfs
@@ -238,7 +240,7 @@ export class MMR {
 
     // add peaks but not the one that is an ancestor of idx because
     // it will be calculated from the leaf
-    proof.push(...peaks.filter(p => p !== currentIdx).map(p => bytesToHex(this.hashes[p])))
+    proof.push(...peaks.filter(p => p !== currentIdx).map(p => this.hashes[p]))
 
     return proof
   }
@@ -295,53 +297,79 @@ export class MMR {
   }
 
   // Doesn't need this.hashes
-  /**
-   * @param {string[]} proof
-   * @param {string} rootHashHex
-   * @returns {boolean}
-   */
-  static verifyProof (proof, leafIdxStr, leavesLengthStr, leafValueHashHex, rootHashHex, fns = nostrFns) {
-    const leafIndex = leafIndexToNodeIndex(parseInt(leafIdxStr, 10)) + 1 // Convert back to 1-indexed
-    const lastPos = getTreeSizeFromNumberOfLeaves(parseInt(leavesLengthStr, 10))
-    if (!Number.isInteger(lastPos) || lastPos <= 0) throw new Error('Wrong tree size')
+  static getProofLayout (leafIndex, leavesLength) {
+    assertSafeUint(leafIndex, 'Leaf index')
+    assertSafeUint(leavesLength, 'Number of leaves')
+    if (leavesLength === 0) throw new Error('Number of leaves must be positive.')
+    if (leafIndex >= leavesLength) throw new Error('Leaf index is out of range.')
 
+    const zeroBasedNodeIndex = leafIndexToNodeIndex(leafIndex)
+    if (!Number.isSafeInteger(zeroBasedNodeIndex + 1)) throw new Error('Leaf position would be unsafe.')
+    const nodeIndex = zeroBasedNodeIndex + 1
+    const lastPos = getTreeSizeFromNumberOfLeaves(leavesLength)
     const peaks = findPeaks(lastPos)
-    const peaksCount = peaks.length
-    const siblingHashesHex = proof.slice(0, proof.length - (peaksCount - 1))
-    const peaksHashesHex = proof.slice(proof.length - (peaksCount - 1))
-    const calculatedLeafHash = fns.toLeafNode(null, leafIndex, hexToBytes(leafValueHashHex))
+    if (peaks.length === 0) throw new Error('Wrong tree size.')
 
-    let currentHash = calculatedLeafHash
-    let currentIdx = leafIndex
-    let siblingN = 0
-
-    while (siblingN < siblingHashesHex.length) {
+    let currentIdx = nodeIndex
+    let siblingCount = 0
+    while (!isPeak(currentIdx, peaks)) {
       const height = getHeight(currentIdx)
       const isLeft = MMR.isLeftSibling(currentIdx)
-      const siblingHash = hexToBytes(siblingHashesHex[siblingN])
-
       const parentOfs = parentOffset(height)
-      const parentIdx = isLeft ? currentIdx + parentOfs : currentIdx - siblingOffset(height) + parentOfs
+      currentIdx = isLeft
+        ? currentIdx + parentOfs
+        : currentIdx - siblingOffset(height) + parentOfs
+      siblingCount++
+    }
 
+    return {
+      nodeIndex,
+      lastPos,
+      peaks,
+      targetPeakIndex: peaks.indexOf(currentIdx),
+      siblingCount,
+      hashCount: siblingCount + peaks.length - 1
+    }
+  }
+
+  /**
+   * Calculate a root from a leaf value and an ordered array of proof hashes.
+   *
+   * @param {Array<*>} proof
+   * @param {number} leafIndex
+   * @param {number} leavesLength
+   * @param {*} leafValue
+   * @param {object} fns
+   * @returns {*}
+   */
+  static calculateRoot (proof, leafIndex, leavesLength, leafValue, fns = nostrFns) {
+    const layout = MMR.getProofLayout(leafIndex, leavesLength)
+    if (!Array.isArray(proof) || proof.length !== layout.hashCount) throw new Error('Wrong proof length.')
+
+    let currentHash = fns.toLeafNode(leafValue, layout.nodeIndex)
+    let currentIdx = layout.nodeIndex
+    for (let siblingN = 0; siblingN < layout.siblingCount; siblingN++) {
+      const height = getHeight(currentIdx)
+      const isLeft = MMR.isLeftSibling(currentIdx)
+      const parentOfs = parentOffset(height)
+      const parentIdx = isLeft
+        ? currentIdx + parentOfs
+        : currentIdx - siblingOffset(height) + parentOfs
+      const siblingHash = proof[siblingN]
       const children = isLeft ? [currentHash, siblingHash] : [siblingHash, currentHash]
       currentHash = fns.toParentNode(children[0], children[1], parentIdx)
-
       currentIdx = parentIdx
-      siblingN++
     }
 
-    // Bag the peaks.
-    const allPeaks = [currentHash, ...peaksHashesHex.map(hexToBytes)]
-    let calculatedRoot = allPeaks[allPeaks.length - 1]
-    for (let i = allPeaks.length - 2; i >= 0; i--) {
-      calculatedRoot = fns.concatPeaks(calculatedRoot, allPeaks[i])
-    }
+    const otherPeaks = proof.slice(layout.siblingCount)
+    let otherPeakIndex = 0
+    const allPeaks = layout.peaks.map((_, index) => (
+      index === layout.targetPeakIndex ? currentHash : otherPeaks[otherPeakIndex++]
+    ))
 
-    const finalRoot = fns.toRootNode(calculatedRoot, lastPos)
-
-    if (bytesToHex(finalRoot) !== rootHashHex) {
-      throw new Error('Root hash mismatch')
-    }
+    let bag = allPeaks[allPeaks.length - 1]
+    for (let i = allPeaks.length - 2; i >= 0; i--) bag = fns.concatPeaks(bag, allPeaks[i])
+    return fns.toRootNode(bag, layout.lastPos)
   }
 
   /**

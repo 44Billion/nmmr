@@ -10,23 +10,40 @@ $> npm i nmmr
 ### Usage
 
 ```js
-import nmmr from 'nmmr'
+import NMMR from 'nmmr'
 
 // Append data as bytes then save chunks to nostr event
 const t = new TextEncoder()
 const nmmr = new NMMR()
 await nmmr.append(t.encode('a'))
 await nmmr.append(t.encode('b'))
+const expectedRoot = nmmr.getRoot()
+const chunks = []
 for await (const chunk of nmmr.getChunks()) {
-  // You should code this part yourself
+  // chunk = { contentBytes, index, total, proof }
+  chunks.push(chunk)
   await createAndPublishNostrEvent(chunk)
 }
 
 // Later verify some chunk is really part of the whole
-NMMR.verifyProof(chunk)
+const chunk = chunks[0]
+NMMR.verifyProof({ ...chunk, root: expectedRoot })
+
+// Or derive the root when it is supplied by another signed object.
+const root = NMMR.calculateRoot({
+  contentBytes: chunk.contentBytes,
+  index: chunk.index,
+  total: chunk.total,
+  proof: chunk.proof
+})
 ```
 
-#### Manually Using the Merkle Mountaing Range
+Version 2 hashes each leaf as
+`sha256(uint(nodeIndex) || sha256(contentBytes))`. Proofs are a compact
+`Uint8Array` containing 32-byte sibling hashes followed by the other MMR peaks.
+The target leaf and root are not repeated in the proof.
+
+#### Manually Using the Merkle Mountain Range
 
 Note: Prefer using the above default export.
 
