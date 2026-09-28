@@ -1,252 +1,166 @@
 const isBrowser = typeof window !== 'undefined'
 
 let fs, os, path
-
 if (!isBrowser) {
+  // Optional imports keep browser bundlers from requiring Node built-ins.
   try {
     fs = await import('node:fs')
     os = await import('node:os')
     path = await import('node:path')
-  } catch (err) {
-    console.error('Failed to load Node.js modules', err)
+  } catch (cause) {
+    throw new Error('NODE_TEMPORARY_STORAGE_UNAVAILABLE', { cause })
   }
 }
 
 const DB_NAME = 'ephemeral-files'
 const STORE_NAME = 'lines'
+let dbPromise
+
+function getDB () {
+  dbPromise ??= new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1)
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => {
+      const db = request.result
+      db.onversionchange = () => { db.close(); dbPromise = null }
+      resolve(db)
+    }
+    request.onupgradeneeded = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        const store = db.createObjectStore(STORE_NAME, { autoIncrement: true })
+        store.createIndex('filename', 'filename', { unique: false })
+      }
+    }
+  }).catch(error => { dbPromise = null; throw error })
+  return dbPromise
+}
+
+async function removeOwnedFile ({ directory, filename }) {
+  if (!isBrowser) {
+    await fs.promises.rm(directory, { recursive: true, force: true })
+    return
+  }
+  const db = await getDB()
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    tx.oncomplete = resolve
+    tx.onabort = () => reject(tx.error || new Error('TEMPORARY_FILE_DELETE_ABORTED'))
+    tx.onerror = () => reject(tx.error)
+    const request = tx.objectStore(STORE_NAME).index('filename').openCursor(IDBKeyRange.only(filename))
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (cursor) { cursor.delete(); cursor.continue() }
+    }
+  })
+}
+
+// The registry must outlive its targets and must not capture a file instance.
+// Finalization is best effort; close() provides deterministic owned cleanup.
+const cleanupRegistry = new FinalizationRegistry(record => { removeOwnedFile(record).catch(() => {}) })
 
 export default class EphemeralFile {
-  static #isFirstWrite = true
-  static #dbPromise
-  static async #getDB () {
-    if (!EphemeralFile.#dbPromise) {
-      let wasJustCreated = false
-      EphemeralFile.#dbPromise = new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1)
-        request.onerror = () => reject(request.error)
-        request.onsuccess = () => resolve(request.result)
-        request.onupgradeneeded = (event) => {
-          const db = event.target.result
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            const store = db.createObjectStore(STORE_NAME, { autoIncrement: true })
-            store.createIndex('filename', 'filename', { unique: false })
-            wasJustCreated = true
-          }
-        }
-      })
-      if (!wasJustCreated) await this.clearAll()
+  #record
+  #contentField
+  #writes = Promise.resolve()
+  #closed = false
+  #closing
+
+  constructor (filename = 'leaves.txt') {
+    if (isBrowser) {
+      this.#record = { filename: `${crypto.randomUUID()}:${filename}` }
+    } else {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nmmr-'))
+      this.#record = { directory, filename: path.join(directory, path.basename(filename)) }
     }
-    return EphemeralFile.#dbPromise
+    cleanupRegistry.register(this, this.#record, this)
   }
 
-  static async clearAll () {
-    if (!isBrowser) return
+  #assertOpen () {
+    if (this.#closed) throw new Error('TEMPORARY_FILE_CLOSED')
+  }
 
-    const db = await EphemeralFile.#getDB()
-    return new Promise((resolve, reject) => {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        resolve()
+  async writeLine (line) {
+    this.#assertOpen()
+    this.#contentField ??= typeof line === 'string' ? '__str__' : Array.isArray(line) ? '__obj__' : null
+    // Snapshot browser values before waiting for preceding writes.
+    const value = isBrowser ? structuredClone(line) : line
+    const write = this.#writes.then(async () => {
+      if (!isBrowser) {
+        await fs.promises.appendFile(this.#record.filename, value + '\n', { mode: 0o600 })
         return
       }
-      const tx = db.transaction(STORE_NAME, 'readwrite')
-      tx.oncomplete = () => resolve()
+      const db = await getDB()
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite')
+        tx.oncomplete = resolve
+        tx.onabort = () => reject(tx.error || new Error('TEMPORARY_FILE_WRITE_ABORTED'))
+        tx.onerror = () => reject(tx.error)
+        tx.objectStore(STORE_NAME).add({
+          ...(this.#contentField ? { [this.#contentField]: value } : value),
+          filename: this.#record.filename
+        })
+      })
+    })
+    this.#writes = write
+    return write
+  }
+
+  async #readPage (after) {
+    const db = await getDB()
+    return new Promise((resolve, reject) => {
+      const rows = []
+      const tx = db.transaction(STORE_NAME, 'readonly')
+      tx.oncomplete = () => resolve(rows)
+      tx.onabort = () => reject(tx.error || new Error('TEMPORARY_FILE_READ_ABORTED'))
       tx.onerror = () => reject(tx.error)
-      const objectStore = tx.objectStore(STORE_NAME)
-      objectStore.clear()
+      const request = tx.objectStore(STORE_NAME).index('filename').openCursor(IDBKeyRange.only(this.#record.filename))
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (!cursor) return
+        if (after !== null && cursor.primaryKey <= after) {
+          cursor.continuePrimaryKey(this.#record.filename, after + 1)
+          return
+        }
+        rows.push({ key: cursor.primaryKey, value: cursor.value })
+        if (rows.length < 128) cursor.continue()
+      }
     })
   }
 
-  static #openFilesCount = 0
-  #EphemeralFilePath
-  #cleanupRegistry
-  #filename
-
-  constructor (filename = `ephemeralFile-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`) {
-    EphemeralFile.#openFilesCount++
-    if (isBrowser) {
-      this.#filename = filename
-      this.#cleanupRegistry = new FinalizationRegistry(async filename => {
-        try {
-          const db = await EphemeralFile.#getDB()
-          const tx = db.transaction(STORE_NAME, 'readwrite')
-          const store = tx.objectStore(STORE_NAME)
-          const index = store.index('filename')
-          const cursorRequest = index.openCursor(IDBKeyRange.only(filename))
-          cursorRequest.onsuccess = () => {
-            const cursor = cursorRequest.result
-            if (cursor) {
-              cursor.delete()
-              cursor.continue()
-            }
-          }
-          const maybeClose = () => {
-            if (--EphemeralFile.#openFilesCount > 0) return
-            db.close()
-            EphemeralFile.#dbPromise = null // Allow re-opening
-          }
-          tx.oncomplete = maybeClose
-          tx.onerror = maybeClose
-        } catch (err) {
-          console.log('Cleanup error:', err)
-        }
-      })
-    } else {
-      this.#filename = path.join(os.tmpdir(), DB_NAME, filename)
-      this.#cleanupRegistry = new FinalizationRegistry((filePath) => {
-        try {
-          fs.unlinkSync(filePath)
-          --EphemeralFile.#openFilesCount
-        } catch (err) {
-          if (err.code === 'ENOENT') return // ignore error when triggered by file abscence
-          console.log('Cleanup error:', err)
-        }
-      })
-    }
-    this.#cleanupRegistry.register(this, this.#filename)
-  }
-
-  #contentField
-  #maybeSetContentFieldByLine (line) {
-    return (this.#contentField ??= typeof line === 'string'
-      ? '__str__'
-      : Array.isArray(line)
-        ? '__obj__'
-        : null
-    )
-  }
-  #maybeSetContentFieldByValue (value) {
-    return (this.#contentField ??= ['__str__', '__obj__'].find(v => v in value) ?? null)
-  }
-  async writeLine (line) {
-    if (isBrowser) {
-      this.#maybeSetContentFieldByLine(line)
-      const db = await EphemeralFile.#getDB()
-      const tx = db.transaction(STORE_NAME, 'readwrite')
-      tx.objectStore(STORE_NAME).add({
-        filename: this.#filename,
-        ...(this.#contentField
-          ? { [this.#contentField]: line }
-          : line)
-      })
-      return new Promise((resolve, reject) => {
-        tx.oncomplete = () => resolve()
-        tx.onerror = () => reject(tx.error)
-      })
-    } else {
-      try {
-        const dir = path.dirname(this.#filename)
-        const doesDirExist = fs.existsSync(dir)
-        if (EphemeralFile.#isFirstWrite) {
-          if (doesDirExist) {
-            // fs.rmSync(dir, { recursive: true, force: true })
-            // would also delete the dir itself
-            async function clearDirContents (dir) {
-              if (!dir.startsWith(os.tmpdir() + '/')) return
-
-              await Promise.all(
-                (await fs.promises.readdir(dir)).map(filename =>
-                  fs.promises.rm(path.join(dir, filename), {
-                    recursive: true,
-                    force: true
-                  })
-                )
-              )
-            }
-            try {
-              await clearDirContents(dir)
-            } catch (err) {
-              console.error(`Error clearing directory ${dir} contents: ${err}`)
-            }
-          }
-          EphemeralFile.#isFirstWrite = false
-        }
-
-        if (!doesDirExist) {
-          fs.mkdirSync(dir, { recursive: true })
-          // Explicitly (can't be part of .mkdirSync()) set permissions to make directory world-writable
-          fs.chmodSync(dir, 0o777)
-        }
-        await fs.promises.appendFile(this.#filename, line + '\n')
-      } catch (err) {
-        console.error('Error appending to file:', err)
-      }
-    }
-  }
-
-  #getFields ({ filename, ...rest }) { return this.#contentField ? rest[this.#contentField] : rest }
   async * readLines () {
-    let file
-    try {
-      if (isBrowser) {
-        const db = await EphemeralFile.#getDB()
-        let lastKey = null
-        let reachedEnd = false
-
-        while (!reachedEnd) {
-          const tx = db.transaction(STORE_NAME, 'readonly')
-          const store = tx.objectStore(STORE_NAME)
-          const index = store.index('filename')
-
-          const cursorRequest = lastKey === null
-            ? index.openCursor(IDBKeyRange.only(this.#filename))
-            : store.openCursor(IDBKeyRange.lowerBound(lastKey + 1))
-          const awaitCursor = () => new Promise((resolve, reject) => {
-            cursorRequest.onsuccess = () => resolve(cursorRequest.result)
-            cursorRequest.onerror = () => reject(cursorRequest.error)
-          })
-
-          try {
-            let cursor = await awaitCursor()
-
-            if (cursor && lastKey !== null) {
-              while (cursor && cursor.value.filename !== this.#filename) {
-                const skipPromise = awaitCursor()
-                cursor.continue()
-                cursor = await skipPromise
-              }
-            }
-
-            if (!cursor) {
-              reachedEnd = true
-              continue
-            }
-
-            while (cursor) {
-              this.#maybeSetContentFieldByValue(cursor.value)
-              const currentValue = this.#getFields(cursor.value)
-              const currentKey = cursor.primaryKey
-
-              const nextCursorPromise = new Promise((resolve, reject) => {
-                cursorRequest.onsuccess = () => resolve(cursorRequest.result)
-                cursorRequest.onerror = () => reject(cursorRequest.error)
-              })
-
-              cursor.continue()
-
-              yield currentValue
-
-              lastKey = currentKey
-              cursor = await nextCursorPromise
-            }
-
-            reachedEnd = true
-          } catch (err) {
-            if (err.name === 'TransactionInactiveError') {
-              reachedEnd = false
-              continue
-            }
-            throw err
-          }
+    this.#assertOpen()
+    await this.#writes
+    if (isBrowser) {
+      let after = null
+      while (true) {
+        this.#assertOpen()
+        const rows = await this.#readPage(after)
+        if (!rows.length) return
+        for (const { key, value: { filename, ...value } } of rows) {
+          this.#assertOpen()
+          yield this.#contentField ? value[this.#contentField] : value
+          after = key
         }
-      } else {
-        file = await fs.promises.open(this.#filename)
+      }
+    } else {
+      const file = await fs.promises.open(this.#record.filename)
+      try {
         for await (const line of file.readLines()) {
-          if (line === '') break
+          this.#assertOpen()
           yield line
         }
-      }
-    } finally {
-      await file?.close()
+      } finally { await file.close() }
     }
+  }
+
+  close () {
+    this.#closed = true
+    this.#closing ??= (async () => {
+      await this.#writes.catch(() => {})
+      await removeOwnedFile(this.#record)
+      cleanupRegistry.unregister(this)
+    })().catch(error => { this.#closing = null; throw error })
+    return this.#closing
   }
 }

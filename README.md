@@ -25,6 +25,9 @@ for await (const chunk of nmmr.getChunks()) {
   await createAndPublishNostrEvent(chunk)
 }
 
+// Release this instance's temporary leaf storage once iteration is finished.
+await nmmr.close()
+
 // Later verify some chunk is really part of the whole
 const chunk = chunks[0]
 NMMR.verifyProof({ ...chunk, root: expectedRoot })
@@ -97,3 +100,23 @@ console.log('Valid proof!')
 ## License
 
 [GNU GPLv3](https://github.com/HerodotusDev/merkle-mountain-ranges/blob/main/LICENSE)
+
+
+### Temporary leaf storage
+
+Each Node instance owns a unique `nmmr-*` directory beneath the system temporary
+directory, created with private permissions. Starting another process or instance
+never sweeps a shared directory. Browser instances use unique record namespaces
+in the existing `ephemeral-files` IndexedDB database and never clear the store
+on initialization. IndexedDB reads stay scoped to that file even when asynchronous
+consumers span multiple transactions; at most 128 rows are read per page.
+
+Call `await nmmr.close()` in a `finally` block after consuming its chunks. Close
+is idempotent, waits for accepted writes, and removes only the instance's leaf
+storage. Return active chunk iterators before closing. Further appends and chunk
+reads reject; roots and previously obtained proofs remain usable. Storage errors
+reject instead of being logged and swallowed. Discard a builder after a failed
+append. Garbage collection provides best-effort owned cleanup only; it is not a
+replacement for close. Crashed processes/tabs can leave temporary records behind.
+There is no automatic orphan sweep or deletion of legacy shared files, because
+their ownership cannot be established safely.

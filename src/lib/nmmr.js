@@ -45,8 +45,10 @@ function splitProof (proof, hashCount) {
 export default class NMMR {
   tree = new MMR()
   leafLength = 0
+  #closed = false
 
   async append (value) {
+    if (this.#closed) throw new Error('NMMR_CLOSED')
     const valueHash = toSha256(value)
     this.tree.append(null, valueHash)
     this.leafLength++
@@ -72,6 +74,7 @@ export default class NMMR {
   }
 
   async * getChunks () {
+    if (this.#closed) throw new Error('NMMR_CLOSED')
     let leafIndex = 0 // just counting leaves, not all nodes
     for await (const line of this.file.readLines()) {
       const { data: leafValue } = this.fromLine(line)
@@ -87,6 +90,12 @@ export default class NMMR {
       }
       leafIndex++
     }
+  }
+
+  // Release only this instance's temporary leaves after consuming its chunks.
+  async close () {
+    this.#closed = true
+    await this.file?.close()
   }
 
   // run this after appending every leaf
