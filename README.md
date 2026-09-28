@@ -105,18 +105,50 @@ console.log('Valid proof!')
 ### Temporary leaf storage
 
 Each Node instance owns a unique `nmmr-*` directory beneath the system temporary
-directory, created with private permissions. Starting another process or instance
-never sweeps a shared directory. Browser instances use unique record namespaces
-in the existing `ephemeral-files` IndexedDB database and never clear the store
-on initialization. IndexedDB reads stay scoped to that file even when asynchronous
-consumers span multiple transactions; at most 128 rows are read per page.
+folder, created with private permissions. Starting another process or instance
+never sweeps a shared directory.
+
+Browser files have unique names within a module session. Before its first leaf
+write, a session acquires an exclusive Web Lock and registers its ownership in
+IndexedDB. Initialization then attempts non-waiting locks on previous sessions:
+active sessions are preserved, and abandoned sessions are removed while their
+locks are held. Deleting the leaves and their session marker is one transaction,
+so interrupted collection can be retried by the next initialization. Concurrent
+initializers cannot remove each other's active leaves.
+
+The browser releases the lifetime lock when the document terminates. On the next
+initialization, another session can reclaim its abandoned leaves, including after
+closing all tabs or restarting the browser. This does not require an unload
+handler, heartbeat, age limit, or garbage collection. A suspended session that
+still owns its lock remains protected. Collection runs once per module session,
+at its first write, rather than periodically.
+
+The `ephemeral-files` IndexedDB database uses schema version 2: `lines` retains
+its `filename` index and `nmmr-sessions` records managed session IDs. File names
+use `nmmr-session:<sessionId>:<fileId>:<label>`. Lifetime lock names are
+`nmmr:ephemeral-files:session:<sessionId>`. Reads stay scoped to one file, even
+across asynchronous consumers, with at most 128 rows per page. If an older open
+database connection blocks migration, initialization rejects with
+`TEMPORARY_STORAGE_UPGRADE_BLOCKED`; close the older context before retrying with
+a new instance.
+
+When Web Locks is unavailable, writes remain isolated but no collectible session
+marker is registered. Legacy rows and rows written without Web Locks are never
+automatically deleted: their ownership cannot be established safely. Node orphan
+directories likewise rely on the operating system's temporary-file policy.
 
 Call `await nmmr.close()` in a `finally` block after consuming its chunks. Close
 is idempotent, waits for accepted writes, and removes only the instance's leaf
-storage. Return active chunk iterators before closing. Further appends and chunk
-reads reject; roots and previously obtained proofs remain usable. Storage errors
-reject instead of being logged and swallowed. Discard a builder after a failed
-append. Garbage collection provides best-effort owned cleanup only; it is not a
-replacement for close. Crashed processes/tabs can leave temporary records behind.
-There is no automatic orphan sweep or deletion of legacy shared files, because
-their ownership cannot be established safely.
+storage. Other files in the same session remain usable. Return active chunk
+iterators before closing. Further appends and chunk reads reject; roots and
+previously obtained proofs remain usable. Storage errors reject instead of being
+logged and swallowed; discard a builder after a failed append. Garbage collection
+provides best-effort owned cleanup and does not replace explicit close.
+
+Run `npm test` for storage ownership, migration, concurrent initialization and
+aborted-collection regressions. The real-tab regression uses the sibling
+launcher's bounded Chrome runner:
+
+```sh
+node ../44billion/bin/run-browser-tests.js -- node --test test/browser/storage.browser.mjs
+```

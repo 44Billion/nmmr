@@ -14,14 +14,26 @@ if (!isBrowser) {
 
 const DB_NAME = 'ephemeral-files'
 const STORE_NAME = 'lines'
+const SESSION_STORE = 'nmmr-sessions'
+const sessionId = isBrowser ? crypto.randomUUID() : null
+const sessionPrefix = id => `nmmr-session:${id}:`
+const sessionLock = id => `nmmr:ephemeral-files:session:${id}`
 let dbPromise
+let sessionPromise
+let currentSession
 
 function getDB () {
   dbPromise ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1)
+    const request = indexedDB.open(DB_NAME, 2)
+    let blocked = false
+    request.onblocked = () => {
+      blocked = true
+      reject(new Error('TEMPORARY_STORAGE_UPGRADE_BLOCKED'))
+    }
     request.onerror = () => reject(request.error)
     request.onsuccess = () => {
       const db = request.result
+      if (blocked) { db.close(); return }
       db.onversionchange = () => { db.close(); dbPromise = null }
       resolve(db)
     }
@@ -31,9 +43,81 @@ function getDB () {
         const store = db.createObjectStore(STORE_NAME, { autoIncrement: true })
         store.createIndex('filename', 'filename', { unique: false })
       }
+      if (!db.objectStoreNames.contains(SESSION_STORE)) db.createObjectStore(SESSION_STORE)
     }
   }).catch(error => { dbPromise = null; throw error })
   return dbPromise
+}
+
+function transactionDone (tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = resolve
+    tx.onabort = () => reject(tx.error || new Error('TEMPORARY_STORAGE_TRANSACTION_ABORTED'))
+  })
+}
+
+async function collectAbandonedSessions (db, locks) {
+  const tx = db.transaction(SESSION_STORE, 'readonly')
+  const done = transactionDone(tx)
+  const request = tx.objectStore(SESSION_STORE).getAllKeys()
+  await done
+  for (const id of request.result) {
+    if (id === sessionId) continue
+    // Acquisition, rather than a lock snapshot or heartbeat, protects the
+    // entire deletion against other collectors and concurrent initialization.
+    await locks.request(sessionLock(id), { ifAvailable: true }, async lock => {
+      if (!lock) return
+      const tx = db.transaction([STORE_NAME, SESSION_STORE], 'readwrite')
+      const done = transactionDone(tx)
+      const prefix = sessionPrefix(id)
+      const rows = tx.objectStore(STORE_NAME).index('filename').openCursor(IDBKeyRange.bound(prefix, prefix + '\uffff'))
+      rows.onsuccess = () => {
+        const cursor = rows.result
+        if (cursor) { cursor.delete(); cursor.continue() }
+      }
+      tx.objectStore(SESSION_STORE).delete(id)
+      await done
+    })
+  }
+}
+
+async function initializeBrowserSession () {
+  const locks = globalThis.navigator?.locks
+  // Rows created without a lifetime lock have no collectible session marker.
+  if (!locks?.request) return
+  const db = await getDB()
+  const ready = Promise.withResolvers()
+  const lifetime = Promise.withResolvers()
+  const session = { active: false }
+  const holding = locks.request(sessionLock(sessionId), async () => {
+    session.active = true
+    ready.resolve()
+    await lifetime.promise
+    session.active = false
+  })
+  holding.catch(error => { session.active = false; ready.reject(error) })
+  await ready.promise
+  currentSession = session
+  try {
+    // Publish ownership only after acquiring the lock, before any leaf writes.
+    const tx = db.transaction(SESSION_STORE, 'readwrite')
+    const done = transactionDone(tx)
+    tx.objectStore(SESSION_STORE).put(true, sessionId)
+    await done
+    await collectAbandonedSessions(db, locks)
+  } catch (error) {
+    lifetime.resolve()
+    await holding.catch(() => {})
+    currentSession = null
+    throw error
+  }
+  // The browser releases this lock on document termination, including when
+  // close()/finalizers did not run. No unload handler or periodic timer needed.
+}
+
+function ensureBrowserSession () {
+  sessionPromise ??= initializeBrowserSession().catch(error => { sessionPromise = null; throw error })
+  return sessionPromise
 }
 
 async function removeOwnedFile ({ directory, filename }) {
@@ -46,7 +130,6 @@ async function removeOwnedFile ({ directory, filename }) {
     const tx = db.transaction(STORE_NAME, 'readwrite')
     tx.oncomplete = resolve
     tx.onabort = () => reject(tx.error || new Error('TEMPORARY_FILE_DELETE_ABORTED'))
-    tx.onerror = () => reject(tx.error)
     const request = tx.objectStore(STORE_NAME).index('filename').openCursor(IDBKeyRange.only(filename))
     request.onsuccess = () => {
       const cursor = request.result
@@ -68,7 +151,7 @@ export default class EphemeralFile {
 
   constructor (filename = 'leaves.txt') {
     if (isBrowser) {
-      this.#record = { filename: `${crypto.randomUUID()}:${filename}` }
+      this.#record = { filename: `${sessionPrefix(sessionId)}${crypto.randomUUID()}:${filename}` }
     } else {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nmmr-'))
       this.#record = { directory, filename: path.join(directory, path.basename(filename)) }
@@ -78,6 +161,7 @@ export default class EphemeralFile {
 
   #assertOpen () {
     if (this.#closed) throw new Error('TEMPORARY_FILE_CLOSED')
+    if (currentSession && !currentSession.active) throw new Error('TEMPORARY_STORAGE_SESSION_ENDED')
   }
 
   async writeLine (line) {
@@ -90,12 +174,13 @@ export default class EphemeralFile {
         await fs.promises.appendFile(this.#record.filename, value + '\n', { mode: 0o600 })
         return
       }
+      await ensureBrowserSession()
       const db = await getDB()
+      if (currentSession && !currentSession.active) throw new Error('TEMPORARY_STORAGE_SESSION_ENDED')
       await new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite')
         tx.oncomplete = resolve
         tx.onabort = () => reject(tx.error || new Error('TEMPORARY_FILE_WRITE_ABORTED'))
-        tx.onerror = () => reject(tx.error)
         tx.objectStore(STORE_NAME).add({
           ...(this.#contentField ? { [this.#contentField]: value } : value),
           filename: this.#record.filename
@@ -113,7 +198,6 @@ export default class EphemeralFile {
       const tx = db.transaction(STORE_NAME, 'readonly')
       tx.oncomplete = () => resolve(rows)
       tx.onabort = () => reject(tx.error || new Error('TEMPORARY_FILE_READ_ABORTED'))
-      tx.onerror = () => reject(tx.error)
       const request = tx.objectStore(STORE_NAME).index('filename').openCursor(IDBKeyRange.only(this.#record.filename))
       request.onsuccess = () => {
         const cursor = request.result
